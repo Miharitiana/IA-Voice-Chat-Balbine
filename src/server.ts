@@ -11,6 +11,38 @@ import { Session, persistSession } from "./infrastructure/persistence/session";
 
 dotenv.config();
 
+async function hangupTwilioCall(callSid: string) {
+  const accountSid = process.env.TWILIO_ACCOUNT_SID;
+  const authToken = process.env.TWILIO_AUTH_TOKEN;
+
+  if (!accountSid || !authToken) {
+    console.warn("[TWILIO] TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN manquants: impossible de raccrocher automatiquement.");
+    return;
+  }
+  if (!callSid || callSid === "unknown") return;
+
+  const url = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Calls/${callSid}.json`;
+  const auth = Buffer.from(`${accountSid}:${authToken}`).toString("base64");
+
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${auth}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: "Status=completed",
+    });
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      console.error("[TWILIO] Hangup failed:", res.status, body);
+    }
+  } catch (e) {
+    console.error("[TWILIO] Hangup request error:", e);
+  }
+}
+
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
@@ -696,6 +728,7 @@ wssTwilio.on("connection", (ws) => {
   };
 
   let streamSid: string | null = null;
+  let twilioCallSid: string | null = null;
   let callShouldEnd = false;
 
   void persistSession(session).catch(() => {
@@ -776,6 +809,8 @@ wssTwilio.on("connection", (ws) => {
           ws.close();
         }
 
+        if (twilioCallSid) await hangupTwilioCall(twilioCallSid);
+
         return { ok: true, callId: session.callId, saved: true };
       }
 
@@ -794,12 +829,15 @@ wssTwilio.on("connection", (ws) => {
 
         await persistSession(session);
 
-        // Annuler la réponse en cours et fermer le stream après transfer_human
-        realtime.interrupt();
+        // Forcer l'arrêt immédiat après transfer_human
+        callShouldEnd = true;
+        realtime.close();
         if (ws.readyState === ws.OPEN) {
           ws.send(JSON.stringify({ event: "stop" }));
           ws.close();
         }
+
+        if (twilioCallSid) await hangupTwilioCall(twilioCallSid);
 
         return { ok: true, callId: session.callId, transfer: "queued", target: target || null };
       }
@@ -807,7 +845,7 @@ wssTwilio.on("connection", (ws) => {
       default:
         return { ok: false, error: "Unknown function", name };
     }
-};
+  };
 
   const realtime = new OpenAIRealtimeService(onAudioReceived, onTextReceived, onToolCall, {
     inputAudioFormat: "g711_ulaw",
@@ -821,17 +859,20 @@ wssTwilio.on("connection", (ws) => {
     ws.close();
   });
 
-  ws.on("message", (raw) => {
+  ws.on("message", (raw: any) => {
     try {
       const msg = JSON.parse(raw.toString());
 
+      if (callShouldEnd) return;
+
       if (msg.event === "start") {
         streamSid = msg.start?.streamSid || msg.streamSid || null;
+        twilioCallSid = msg.start?.callSid || msg.callSid || null;
         console.log(`\n STREAM AUDIO DÉMARRÉ 🎙️🎙️🎙️`);
         console.log(`   Stream SID: ${streamSid}`);
         console.log(`   Call SID: ${msg.start?.callSid || 'unknown'}`);
         console.log(` STREAM AUDIO DÉMARRÉ 🎙️🎙️🎙️\n`);
-        session.events.push({ at: Date.now(), type: "twilio.start", data: { streamSid } });
+        session.events.push({ at: Date.now(), type: "twilio.start", data: { streamSid, callSid: twilioCallSid } });
         void persistSession(session).catch(() => {
           // ignore
         });
