@@ -265,6 +265,7 @@ wss.on("connection", (ws) => {
   console.log("Client connecté pour un appel Realtime");
 
   let clientClosed = false;
+  let callShouldEnd = false;
 
   const session: Session = {
     callId: crypto.randomUUID(),
@@ -450,6 +451,16 @@ wss.on("connection", (ws) => {
 
         await persistSession(session);
 
+        // Forcer l'arrêt immédiat après take_message
+        callShouldEnd = true;
+        realtime.close(); // Fermer complètement la connexion OpenAI
+        
+        // Fermer le stream immédiatement
+        if (ws.readyState === ws.OPEN) {
+          ws.send(JSON.stringify({ event: "stop" }));
+          ws.close();
+        }
+
         return {
           ok: true,
           callId: session.callId,
@@ -475,6 +486,16 @@ wss.on("connection", (ws) => {
         session.events.push({ at: Date.now(), type: "state.change", data: { state: session.state } });
 
         await persistSession(session);
+
+        // Forcer l'arrêt immédiat après transfer_human
+        callShouldEnd = true;
+        realtime.close(); // Fermer complètement la connexion OpenAI
+        
+        // Fermer le stream immédiatement
+        if (ws.readyState === ws.OPEN) {
+          ws.send(JSON.stringify({ event: "stop" }));
+          ws.close();
+        }
 
         return {
           ok: true,
@@ -518,6 +539,7 @@ wss.on("connection", (ws) => {
     if (silenceTimer) return;
     silenceTimer = setInterval(() => {
       if (ws.readyState !== ws.OPEN) return;
+      if (callShouldEnd) return; // Arrêter tout traitement si l'appel doit se terminer
 
       const now = Date.now();
       const silentFor = now - lastAudioAt;
@@ -674,6 +696,7 @@ wssTwilio.on("connection", (ws) => {
   };
 
   let streamSid: string | null = null;
+  let callShouldEnd = false;
 
   void persistSession(session).catch(() => {
     // ignore
@@ -743,8 +766,11 @@ wssTwilio.on("connection", (ws) => {
 
         await persistSession(session);
 
-        // Annuler la réponse en cours et fermer le stream après take_message
-        realtime.interrupt();
+        // Forcer l'arrêt immédiat après take_message
+        callShouldEnd = true;
+        realtime.close(); // Fermer complètement la connexion OpenAI
+        
+        // Fermer le stream immédiatement
         if (ws.readyState === ws.OPEN) {
           ws.send(JSON.stringify({ event: "stop" }));
           ws.close();
@@ -764,7 +790,7 @@ wssTwilio.on("connection", (ws) => {
         session.outcome = "transfer_requested";
         session.state = "done";
         session.stateSinceAt = Date.now();
-        session.events.push({ at: Date.now(), type: "state.change", data: { state: session.state } });
+        session.events.push({ at: Date.now(), type: "state.change", data: { state: session.state, reason: "transfer_human" } });
 
         await persistSession(session);
 
@@ -781,7 +807,7 @@ wssTwilio.on("connection", (ws) => {
       default:
         return { ok: false, error: "Unknown function", name };
     }
-  };
+};
 
   const realtime = new OpenAIRealtimeService(onAudioReceived, onTextReceived, onToolCall, {
     inputAudioFormat: "g711_ulaw",
