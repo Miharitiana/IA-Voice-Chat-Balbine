@@ -2,12 +2,17 @@ import crypto from "crypto";
 import dotenv from "dotenv";
 import express from "express";
 import http from "http";
+import { Buffer } from "node:buffer";
 import { createClient } from "redis";
 import { WebSocketServer } from "ws";
 import { OpenAIRealtimeService } from "./infrastructure/llm/openai-realtime.service";
+import { TakeMessageArgs, TransferHumanArgs } from "./infrastructure/llm/tools.types";
+import { Session, persistSession } from "./infrastructure/persistence/session";
+
 dotenv.config();
 
 const app = express();
+app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 app.use(express.static("public")); // sert index.html, app.js, etc.
 const server = http.createServer(app);
@@ -124,17 +129,17 @@ async function readRecentSessions(limit = 50): Promise<Session[]> {
   return sessions;
 }
 
-app.get("/debug", (_req, res) => {
+app.get("/debug", (_req: any, res: any) => {
   res.json({ status: "Server is Running", realtime: "active" });
 });
 
-app.get("/debug/sessions", async (req, res) => {
+app.get("/debug/sessions", async (req: any, res: any) => {
   const limit = Number(req.query.limit || 50);
   const sessions = await readRecentSessions(limit);
   res.json({ count: sessions.length, sessions });
 });
 
-app.get("/debug/sessions/:callId", async (req, res) => {
+app.get("/debug/sessions/:callId", async (req: any, res: any) => {
   const { callId } = req.params;
   const session = await readSession(callId);
   if (!session) {
@@ -144,10 +149,25 @@ app.get("/debug/sessions/:callId", async (req, res) => {
   res.json(session);
 });
 
-app.post("/twilio/voice", (req, res) => {
-  const callSid = req.body.CallSid || 'unknown';
-  const from = req.body.From || 'unknown';
-  const to = req.body.To || 'unknown';
+app.get("/admin/messages", async (req: any, res: any) => {
+  const sessions = await readRecentSessions(100);
+  const messages = sessions
+    .filter(s => s.messages && s.messages.length > 0)
+    .flatMap(s => s.messages.map(m => ({
+      callId: s.callId,
+      at: new Date(m.at).toISOString(),
+      name: m.name || null,
+      phone: m.phone || null,
+      message: m.message,
+      outcome: s.outcome,
+    })));
+  res.json({ count: messages.length, messages });
+});
+
+app.post("/twilio/voice", (req: any, res: any) => {
+  const callSid = req.body?.CallSid || 'unknown';
+  const from = req.body?.From || 'unknown';
+  const to = req.body?.To || 'unknown';
   
   console.log(`\n🚨🚨🚨 TWILIO WEBHOOK REÇU 🚨🚨🚨`);
   console.log(`   Call SID: ${callSid}`);
@@ -156,8 +176,8 @@ app.post("/twilio/voice", (req, res) => {
   console.log(`   Time: ${new Date().toISOString()}`);
   console.log(`🚨🚨🚨 TWILIO WEBHOOK REÇU 🚨🚨🚨\n`);
   
-  const host = String(req.headers["x-forwarded-host"] || req.headers.host || "");
-  const proto = String(req.headers["x-forwarded-proto"] || "https");
+  const host = String(req.headers?.["x-forwarded-host"] || req.headers?.host || "");
+  const proto = String(req.headers?.["x-forwarded-proto"] || "https");
   const base = process.env.PUBLIC_BASE_URL || (host ? `${proto}://${host}` : "");
   const wsUrl = process.env.PUBLIC_WSS_URL || (base ? base.replace(/^http/, "ws") + "/twilio/media" : "");
 
@@ -456,7 +476,6 @@ wss.on("connection", (ws) => {
 
         await persistSession(session);
 
-        // Module 1: on simule le transfert. Plus tard, ici tu appelleras 3CX/SIP.
         return {
           ok: true,
           callId: session.callId,
@@ -467,6 +486,14 @@ wss.on("connection", (ws) => {
 
       default:
         return { ok: false, error: "Unknown function", name };
+    }
+
+    // Fermeture du stream après take_message ou transfer_human
+    if (name === "take_message" || name === "transfer_human") {
+      if (ws.readyState === ws.OPEN) {
+        ws.send(JSON.stringify({ event: "stop" }));
+        ws.close();
+      }
     }
   };
 
@@ -715,6 +742,13 @@ wssTwilio.on("connection", (ws) => {
         session.events.push({ at: Date.now(), type: "state.change", data: { state: session.state } });
 
         await persistSession(session);
+
+        // Fermeture du stream après take_message
+        if (ws.readyState === ws.OPEN) {
+          ws.send(JSON.stringify({ event: "stop" }));
+          ws.close();
+        }
+
         return { ok: true, callId: session.callId, saved: true };
       }
 
@@ -732,6 +766,13 @@ wssTwilio.on("connection", (ws) => {
         session.events.push({ at: Date.now(), type: "state.change", data: { state: session.state } });
 
         await persistSession(session);
+
+        // Fermeture du stream après transfer_human
+        if (ws.readyState === ws.OPEN) {
+          ws.send(JSON.stringify({ event: "stop" }));
+          ws.close();
+        }
+
         return { ok: true, callId: session.callId, transfer: "queued", target: target || null };
       }
 
@@ -747,7 +788,7 @@ wssTwilio.on("connection", (ws) => {
 
   realtime.connect().then(() => {
     console.log("[TWILIO] Bridge Realtime OpenAI établi.");
-  }).catch(e => {
+  }).catch((e: unknown) => {
     console.error("[TWILIO] Erreur bridge Realtime:", e);
     ws.close();
   });
@@ -758,10 +799,10 @@ wssTwilio.on("connection", (ws) => {
 
       if (msg.event === "start") {
         streamSid = msg.start?.streamSid || msg.streamSid || null;
-        console.log(`\n🎙️🎙️🎙️ STREAM AUDIO DÉMARRÉ 🎙️🎙️🎙️`);
+        console.log(`\n STREAM AUDIO DÉMARRÉ 🎙️🎙️🎙️`);
         console.log(`   Stream SID: ${streamSid}`);
         console.log(`   Call SID: ${msg.start?.callSid || 'unknown'}`);
-        console.log(`🎙️🎙️🎙️ STREAM AUDIO DÉMARRÉ 🎙️🎙️🎙️\n`);
+        console.log(` STREAM AUDIO DÉMARRÉ 🎙️🎙️🎙️\n`);
         session.events.push({ at: Date.now(), type: "twilio.start", data: { streamSid } });
         void persistSession(session).catch(() => {
           // ignore
