@@ -799,14 +799,20 @@ wssTwilio.on("connection", (ws) => {
 
         // Forcer l'arrêt immédiat après take_message
         callShouldEnd = true;
+        
+        // 1) Arrêter OpenAI en premier
         realtime.close(); // Fermer complètement la connexion OpenAI
         
-        // Fermer le stream immédiatement
+        // 2) Envoyer un signal d'arrêt explicite à OpenAI
+        realtime.interrupt();
+        
+        // 3) Fermer le stream Twilio immédiatement
         if (ws.readyState === ws.OPEN) {
           ws.send(JSON.stringify({ event: "stop" }));
           ws.close();
         }
 
+        // 4) Raccrocher l'appel Twilio via API REST
         if (twilioCallSid) await hangupTwilioCall(twilioCallSid);
 
         return { ok: true, callId: session.callId, saved: true };
@@ -830,6 +836,8 @@ wssTwilio.on("connection", (ws) => {
         // Forcer l'arrêt immédiat après transfer_human
         callShouldEnd = true;
         realtime.close();
+        // 2) Envoyer un signal d'arrêt explicite à OpenAI
+        realtime.interrupt();
         if (ws.readyState === ws.OPEN) {
           ws.send(JSON.stringify({ event: "stop" }));
           ws.close();
