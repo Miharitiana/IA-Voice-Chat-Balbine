@@ -743,7 +743,8 @@ wssTwilio.on("connection", (ws) => {
 
         await persistSession(session);
 
-        // Fermeture du stream après take_message
+        // Annuler la réponse en cours et fermer le stream après take_message
+        realtime.interrupt();
         if (ws.readyState === ws.OPEN) {
           ws.send(JSON.stringify({ event: "stop" }));
           ws.close();
@@ -767,7 +768,8 @@ wssTwilio.on("connection", (ws) => {
 
         await persistSession(session);
 
-        // Fermeture du stream après transfer_human
+        // Annuler la réponse en cours et fermer le stream après transfer_human
+        realtime.interrupt();
         if (ws.readyState === ws.OPEN) {
           ws.send(JSON.stringify({ event: "stop" }));
           ws.close();
