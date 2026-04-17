@@ -6,8 +6,6 @@ import { Buffer } from "node:buffer";
 import { createClient } from "redis";
 import { WebSocketServer } from "ws";
 import { OpenAIRealtimeService } from "./infrastructure/llm/openai-realtime.service";
-import { TakeMessageArgs, TransferHumanArgs } from "./infrastructure/llm/tools.types";
-import { Session, persistSession } from "./infrastructure/persistence/session";
 
 dotenv.config();
 
